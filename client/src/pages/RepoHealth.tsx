@@ -22,6 +22,7 @@ import { StatCard } from "../components/health/StatCard";
 import { CommitTimeline } from "../components/health/CommitTimeline";
 import { SignalTrendChart } from "../components/health/SignalTrendChart";
 import { CodebaseGrowthChart } from "../components/health/CodebaseGrowthChart";
+import { ScoreBreakdown } from "../components/health/ScoreBreakdown";
 
 interface Repo {
   _id: string;
@@ -38,6 +39,8 @@ interface HealthSnapshot {
     debt: { weightedTotal: number; avgPerPR: number; normalized: number };
     confidence: { rollingAvg: number; normalized: number };
   };
+  /** Top-level (not under `signals`) — same shape as the snapshot stores it. */
+  smells: { hitCount: number; normalized: number };
   hotFiles: string[];
   totalFiles: number;
   totalDefs: number;
@@ -70,6 +73,9 @@ interface HistoryPoint {
   churnRisk: number;
   debt: number;
   confidence: number;
+  /** 0..1 normalized smell signal — 0 on snapshots predating semantic analysis. */
+  smells: number;
+  smellCount: number;
   totalFiles: number;
   totalDefs: number;
 }
@@ -313,19 +319,45 @@ export default function RepoHealth() {
         </div>
       </div>
 
-      {/* Stat strip */}
+      {/* Stat strip — each card is clickable to reveal a brief description. */}
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3 mb-6">
         <StatCard
           icon={Activity}
           label="Score"
           value={Math.round(snapshot.score)}
           trend={snapshot.metrics.scoreChange}
+          description="The composite health score (0–100). Combines coupling, churn risk, and semantic findings; baselined by confidence. Higher is healthier — lower means more structural risk."
         />
-        <StatCard icon={FileCode}   label="Files"       value={snapshot.totalFiles} />
-        <StatCard icon={GitBranch}  label="Definitions" value={snapshot.totalDefs} />
-        <StatCard icon={TrendingUp} label="Snapshots"   value={snapshot.metrics.totalSnapshots} />
-        <StatCard icon={Clock}      label="Days tracked"value={snapshot.metrics.daysTracked} />
-        <StatCard icon={BarChart3}  label="PRs analyzed"value={snapshot.prCount} />
+        <StatCard
+          icon={FileCode}
+          label="Files"
+          value={snapshot.totalFiles}
+          description="Number of files in the indexed file tree after skip filters (node_modules, lockfiles, binaries excluded). Capped at 3,000 for monorepos."
+        />
+        <StatCard
+          icon={GitBranch}
+          label="Definitions"
+          value={snapshot.totalDefs}
+          description="Total symbol definitions — functions, classes, methods, interfaces — extracted by tree-sitter across all parsed source files."
+        />
+        <StatCard
+          icon={TrendingUp}
+          label="Snapshots"
+          value={snapshot.metrics.totalSnapshots}
+          description="Number of health snapshots recorded for this repo. One snapshot per indexing run; drives the trend chart and the score forecast."
+        />
+        <StatCard
+          icon={Clock}
+          label="Days tracked"
+          value={snapshot.metrics.daysTracked}
+          description="Days elapsed since the first snapshot was recorded. The longer this is, the more meaningful the trend chart becomes."
+        />
+        <StatCard
+          icon={BarChart3}
+          label="PRs analyzed"
+          value={snapshot.prCount}
+          description="Number of merged PRs the history-summarizer agent has analyzed. Requires an AI provider key in Settings — otherwise stays at zero."
+        />
       </div>
 
       {/* Cost banner — only when there's actual usage to show */}
@@ -375,7 +407,15 @@ export default function RepoHealth() {
         )}
       </div>
 
-      <div className="mb-3">
+      {/* Score breakdown — formula plugged in with current numbers, paired
+          with the visual signal breakdown right below it. */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-3 mb-3">
+        <ScoreBreakdown
+          score={snapshot.score}
+          signals={snapshot.signals}
+          smells={snapshot.smells ?? { hitCount: 0, normalized: 0 }}
+          computedAt={snapshot.computedAt}
+        />
         {history.length > 0 ? (
           <SignalTrendChart data={history} />
         ) : (

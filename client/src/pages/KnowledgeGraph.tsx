@@ -127,6 +127,9 @@ export default function KnowledgeGraph() {
   const [current, setCurrent] = useState<SnapshotFull | null>(null);
   const [diff, setDiff] = useState<DiffResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [missingSha, setMissingSha] = useState<string | null>(null);
+  const [buildPending, setBuildPending] = useState(false);
+  const [buildToast, setBuildToast] = useState<string | null>(null);
   const [buildStatus, setBuildStatus] = useState<BuildStatus | null>(null);
   const [buildProgress, setBuildProgress] = useState<{
     completed: number;
@@ -137,7 +140,6 @@ export default function KnowledgeGraph() {
     currentSha?: string;
   } | null>(null);
   const [repoDropdownOpen, setRepoDropdownOpen] = useState(false);
-  const [layout, setLayout] = useState<"fcose" | "dagre">("fcose");
 
   // ── URL state ──
   const activeRepoId = searchParams.get("repoId") || repos[0]?._id;
@@ -185,14 +187,26 @@ export default function KnowledgeGraph() {
   // ── Fetch single snapshot when toSha changes (view mode) ──
   useEffect(() => {
     if (mode !== "view" || !activeRepoId || !toSha) return;
+    setMissingSha(null);
     api
       .get(`/repos/${activeRepoId}/graph/${toSha}`)
       .then(({ data }) => setCurrent(data))
       .catch((err) => {
-        setCurrent(null);
-        setError(err.response?.data?.error || "Failed to load snapshot");
+        // Soft-fail: if the requested commit hasn't been snapshotted, fall
+        // back to the most recent snapshot so the page still shows
+        // something useful, and surface a banner explaining why.
+        const latest = snapshots?.[0]?.commitSha;
+        if (err.response?.status === 404 && latest && latest !== toSha) {
+          setMissingSha(toSha);
+          const sp = new URLSearchParams(searchParams);
+          sp.set("to", latest);
+          setSearchParams(sp, { replace: true });
+        } else {
+          setCurrent(null);
+          setError(err.response?.data?.error || "Failed to load snapshot");
+        }
       });
-  }, [mode, activeRepoId, toSha]);
+  }, [mode, activeRepoId, toSha, snapshots, searchParams, setSearchParams]);
 
   // ── Fetch diff when in diff mode with both SHAs ──
   useEffect(() => {
@@ -281,14 +295,35 @@ export default function KnowledgeGraph() {
   // ── Build history button ──
   const [commitCount, setCommitCount] = useState(30);
   const handleBuildHistory = async () => {
-    if (!activeRepoId) return;
+    if (!activeRepoId || buildPending) return;
+    setBuildPending(true);
+    // Optimistic: flip into "waiting" right away so the user sees the
+    // progress banner immediately, even before the POST round-trips and
+    // the first socket event lands. Real socket events overwrite this.
+    setBuildStatus({ state: "waiting", commitCount });
     try {
       const { data } = await api.post(`/repos/${activeRepoId}/graph/build`, {
         commitCount,
       });
-      setBuildStatus({ state: "active", commitCount: data.commitCount });
+      setBuildStatus({
+        state: "active",
+        commitCount: data.commitCount ?? commitCount,
+      });
+      setBuildToast(
+        data.message ||
+          `Queued build for the last ${data.commitCount ?? commitCount} commits`,
+      );
+      // Auto-clear toast after a few seconds — the progress banner
+      // takes over as the source of truth.
+      setTimeout(() => setBuildToast(null), 4000);
+      // Verify with the authoritative status endpoint in case the
+      // socket connection isn't healthy.
+      fetchBuildStatus(activeRepoId);
     } catch (err: any) {
+      setBuildStatus(null);
       setError(err.response?.data?.error || "Failed to start build");
+    } finally {
+      setBuildPending(false);
     }
   };
 
@@ -535,22 +570,9 @@ export default function KnowledgeGraph() {
           </>
         )}
 
-        {/* Layout toggle */}
-        <div className="ml-auto flex items-center gap-2 text-[11px] text-muted-foreground">
-          <span>Layout:</span>
-          <select
-            value={layout}
-            onChange={(e) => setLayout(e.target.value as any)}
-            className="bg-card border border-border rounded px-2 py-1 text-[11px]"
-          >
-            <option value="fcose">Force (fcose)</option>
-            <option value="dagre">Hierarchical (dagre)</option>
-          </select>
-        </div>
-
         {/* Build history button */}
         {!isBuilding && (
-          <div className="flex items-center gap-2">
+          <div className="ml-auto flex items-center gap-2">
             <label className="text-[11px] text-muted-foreground">
               Commits:
               <input
@@ -564,10 +586,15 @@ export default function KnowledgeGraph() {
             </label>
             <button
               onClick={handleBuildHistory}
-              className="clay-btn px-2.5 py-1.5 text-[12px] flex items-center gap-1.5"
+              disabled={buildPending}
+              className="clay-btn px-2.5 py-1.5 text-[12px] flex items-center gap-1.5 disabled:opacity-50"
             >
-              <Hammer className="w-3 h-3" />
-              Build history
+              {buildPending ? (
+                <Loader2 className="w-3 h-3 animate-spin" />
+              ) : (
+                <Hammer className="w-3 h-3" />
+              )}
+              {buildPending ? "Queueing…" : "Build history"}
             </button>
           </div>
         )}
@@ -619,6 +646,53 @@ export default function KnowledgeGraph() {
         </div>
       )}
 
+      {/* Build queued toast */}
+      {buildToast && (
+        <div
+          className="clay-card px-4 py-2.5 mb-3 flex items-center gap-2.5 border-l-2"
+          style={{ borderLeftColor: "var(--chart-5)" }}
+        >
+          <CheckCircle2
+            className="w-3.5 h-3.5 shrink-0"
+            style={{ color: "var(--chart-5)" }}
+          />
+          <p className="flex-1 text-[12.5px]">{buildToast}</p>
+          <button
+            onClick={() => setBuildToast(null)}
+            className="text-muted-foreground hover:text-foreground"
+          >
+            <X className="w-3.5 h-3.5" />
+          </button>
+        </div>
+      )}
+
+      {/* Missing snapshot banner — shown when the requested commit
+          doesn't have a built snapshot and we fell back to the latest. */}
+      {missingSha && (
+        <div className="px-4 py-3 mb-3 border border-border bg-muted/40 rounded-md flex items-start gap-3">
+          <AlertCircle className="w-4 h-4 text-muted-foreground shrink-0 mt-0.5" />
+          <div className="flex-1">
+            <p className="text-[12.5px] font-medium">
+              Commit{" "}
+              <span className="font-mono">{missingSha.slice(0, 7)}</span> hasn't
+              been snapshotted yet
+            </p>
+            <p className="text-[11.5px] text-muted-foreground mt-0.5 leading-relaxed">
+              Showing the latest available snapshot instead. Click{" "}
+              <span className="font-medium text-foreground">Build history</span>{" "}
+              to backfill older commits — snapshots only exist for the most
+              recent indexed commit until you do.
+            </p>
+          </div>
+          <button
+            onClick={() => setMissingSha(null)}
+            className="text-muted-foreground hover:text-foreground"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+      )}
+
       {/* Error banner */}
       {error && (
         <div className="px-4 py-3 mb-3 border border-destructive/30 bg-destructive/[0.04] rounded-md flex items-start gap-3">
@@ -644,7 +718,6 @@ export default function KnowledgeGraph() {
                 nodes={renderNodes}
                 edges={renderEdges}
                 showDiff={mode === "diff"}
-                layout={layout}
                 repoId={activeRepoId}
               />
             </div>

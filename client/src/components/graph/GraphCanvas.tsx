@@ -47,8 +47,6 @@ interface Props {
   edges: GraphEdge[];
   /** Apply added/removed/unchanged overlay colors. */
   showDiff?: boolean;
-  /** "fcose" → left-to-right tree; "dagre" → top-to-bottom tree. */
-  layout?: "fcose" | "dagre";
   onNodeClick?: (id: string) => void;
   /** Required for the hover card to fetch /file-meta. Without it the card
    *  still shows pagerank, dependencies, and the basename — just no commit
@@ -96,7 +94,6 @@ function nodeSize(pageRank: number, max: number): number {
 function computeLayout(
   rawNodes: GraphNode[],
   rawEdges: GraphEdge[],
-  layoutKind: "fcose" | "dagre",
   showDiff: boolean,
 ): { rfNodes: Node[]; rfEdges: Edge[]; maxPageRank: number } {
   const byDir = new Map<string, GraphNode[]>();
@@ -120,7 +117,7 @@ function computeLayout(
   const g = new dagre.graphlib.Graph();
   g.setDefaultEdgeLabel(() => ({}));
   g.setGraph({
-    rankdir: layoutKind === "dagre" ? "TB" : "LR",
+    rankdir: "LR",
     nodesep: 90,
     ranksep: 130,
     marginx: 40,
@@ -640,13 +637,12 @@ export function GraphCanvas({
   nodes,
   edges,
   showDiff = false,
-  layout = "fcose",
   onNodeClick,
   repoId,
 }: Props) {
   const { rfNodes: baseNodes, rfEdges: baseEdges } = useMemo(
-    () => computeLayout(nodes, edges, layout, showDiff),
-    [nodes, edges, layout, showDiff],
+    () => computeLayout(nodes, edges, showDiff),
+    [nodes, edges, showDiff],
   );
 
   const [hoverState, setHoverState] = useState<HoverState | null>(null);

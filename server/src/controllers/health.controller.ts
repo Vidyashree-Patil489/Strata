@@ -48,6 +48,10 @@ export async function getHealthSnapshot(req: Request, res: Response) {
     repoFullName: repo.fullName,
     score: snapshot.score,
     signals: snapshot.signals,
+    // Smells live outside `signals` in the schema (top-level field), so we
+    // surface it alongside. Empty default for snapshots that predate the
+    // semantic-analysis feature.
+    smells: snapshot.smells ?? { hitCount: 0, normalized: 0 },
     hotFiles: snapshot.hotFiles,
     totalFiles: snapshot.totalFiles,
     totalDefs: snapshot.totalDefinitions,
@@ -91,7 +95,7 @@ export async function getHealthHistory(req: Request, res: Response) {
     computedAt: { $gte: since },
   })
     .sort({ computedAt: 1 })
-    .select("score computedAt signals totalFiles totalDefinitions");
+    .select("score computedAt signals smells totalFiles totalDefinitions");
 
   return res.json({
     repoId,
@@ -106,6 +110,11 @@ export async function getHealthHistory(req: Request, res: Response) {
       churnRisk: s.signals.churnRisk.normalized,
       debt: s.signals.debt.normalized,
       confidence: s.signals.confidence.normalized,
+      // Semantic findings — top-level on the snapshot, surfaced here so the
+      // Signal Breakdown chart can plot it alongside the four original
+      // signals. 0 for snapshots predating the feature.
+      smells: s.smells?.normalized ?? 0,
+      smellCount: s.smells?.hitCount ?? 0,
       totalFiles: s.totalFiles,
       totalDefs: s.totalDefinitions,
     })),

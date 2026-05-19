@@ -16,6 +16,8 @@ interface DataPoint {
   churnRisk: number;
   debt: number;
   confidence: number;
+  /** Optional — only present on snapshots since the semantic-analysis feature shipped. */
+  smells?: number;
 }
 
 interface Props {
@@ -23,10 +25,11 @@ interface Props {
 }
 
 const SIGNALS = [
-  { key: "coupling",   name: "Coupling",    color: "#a16207", desc: "Gini of PageRank — lower is better" },
-  { key: "churnRisk",  name: "Churn risk",  color: "#b91c1c", desc: "Hot-file count — lower is better" },
-  { key: "debt",       name: "Debt",        color: "#be185d", desc: "Reserved · default 0" },
-  { key: "confidence", name: "Confidence",  color: "#15803d", desc: "Reserved · default 70%" },
+  { key: "coupling",   name: "Coupling",          color: "#a16207", desc: "Gini of PageRank — lower is better" },
+  { key: "churnRisk",  name: "Churn risk",        color: "#b91c1c", desc: "Hot-file count — lower is better" },
+  { key: "smells",     name: "Semantic findings", color: "#7c3aed", desc: "Anti-patterns from dependency graph — lower is better" },
+  { key: "debt",       name: "Debt",              color: "#be185d", desc: "Reserved · default 0" },
+  { key: "confidence", name: "Confidence",        color: "#15803d", desc: "Reserved · default 70%" },
 ];
 
 const CustomTooltip = ({ active, payload }: any) => {
@@ -47,11 +50,13 @@ export function SignalTrendChart({ data }: Props) {
   if (data.length === 0) return null;
 
   // Take the latest snapshot — bars will always be distinct heights for the
-  // four signals, so the chart always reads as "alive" even with one snapshot.
+  // five signals, so the chart always reads as "alive" even with one snapshot.
   const latest = data[data.length - 1];
   const bars = SIGNALS.map((s) => ({
     name: s.name,
-    value: (latest as any)[s.key] as number,
+    // Default to 0 if the signal isn't present (e.g. smells on snapshots
+    // predating the semantic-analysis feature). Avoids NaN-width bars.
+    value: (Number((latest as any)[s.key]) || 0),
     color: s.color,
     desc: s.desc,
   }));
@@ -66,12 +71,12 @@ export function SignalTrendChart({ data }: Props) {
         </p>
       </div>
 
-      <ResponsiveContainer width="100%" height={220}>
+      <ResponsiveContainer width="100%" height={260}>
         <BarChart
           data={bars}
           layout="vertical"
           margin={{ top: 4, right: 44, left: 4, bottom: 4 }}
-          barCategoryGap={12}
+          barCategoryGap={10}
         >
           <CartesianGrid horizontal={false} stroke="#e7e5e4" strokeDasharray="3 3" />
           <XAxis
@@ -88,7 +93,7 @@ export function SignalTrendChart({ data }: Props) {
             tick={{ fontSize: 11, fill: "#0a0a0a" }}
             axisLine={false}
             tickLine={false}
-            width={92}
+            width={130}
           />
           <Tooltip content={<CustomTooltip />} cursor={{ fill: "#f5f5f4" }} />
           <Bar dataKey="value" radius={[3, 3, 3, 3]} isAnimationActive={false}>

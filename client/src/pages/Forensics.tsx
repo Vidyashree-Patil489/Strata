@@ -5,6 +5,7 @@ import {
   AlertTriangle,
   Bot,
   CheckCircle,
+  Info,
   Loader2,
   ChevronDown,
   ChevronRight,
@@ -359,43 +360,54 @@ export default function Forensics() {
           icon={Activity}
           label="Score"
           value={Math.round(data.score)}
+          description="The composite health score (0–100). Combines coupling, churn risk, and semantic findings; baselined by confidence. Same number you see on the Health page."
         />
         <StatBlock
           icon={Coins}
           label="LLM cost (all-time)"
           value={`$${data.costSummary.totalUsd.toFixed(4)}`}
           sub={`${data.costSummary.callCount} call${data.costSummary.callCount === 1 ? "" : "s"}`}
+          description="Total USD cost of all LLM calls for this repo since indexing began — sum of pattern-extractor and history-summarizer runs. Per-call breakdown is in the cost ledger below."
         />
         <StatBlock
           icon={FileCode}
           label="Files in graph"
           value={data.coupling.totalFiles}
+          description="Number of files that participate in the dependency graph — i.e. tree-sitter found at least one symbol in them and they contributed to PageRank."
         />
         <StatBlock
           icon={Clock}
           label="Pushes tracked"
           value={data.pushStats.count}
+          description="Total push events recorded for this repo. Each comes from the GitHub webhook (or a manual re-index) and feeds the churn-risk signal."
         />
       </div>
 
       {/* ─── Section: Score breakdown ─────────────────────────────── */}
       <Section
         title="How the score was calculated"
-        description={`Composite of two structural signals — coupling and churn risk — plus a neutral confidence baseline. Higher signal values reduce the score.`}
+        description={`Composite of three structural signals — coupling, churn risk, and semantic findings — plus a neutral confidence baseline. Higher signal values reduce the score.`}
       >
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3">
           <SignalBlock
             label="Coupling"
             inputs={`Gini ${data.signals.coupling.gini.toFixed(3)} of PageRank across ${data.coupling.totalFiles} files`}
             normalized={data.signals.coupling.normalized}
-            weight={45}
+            weight={35}
             invert
           />
           <SignalBlock
             label="Churn risk"
             inputs={`${data.signals.churnRisk.hotFileCount} hot file${data.signals.churnRisk.hotFileCount === 1 ? "" : "s"} from ${data.pushStats.count} recent push${data.pushStats.count === 1 ? "" : "es"}`}
             normalized={data.signals.churnRisk.normalized}
-            weight={45}
+            weight={35}
+            invert
+          />
+          <SignalBlock
+            label="Semantic findings"
+            inputs={`${data.smells?.hitCount ?? 0} anti-pattern${(data.smells?.hitCount ?? 0) === 1 ? "" : "s"} from dependency graph`}
+            normalized={data.smells?.normalized ?? 0}
+            weight={20}
             invert
           />
           <SignalBlock
@@ -415,11 +427,12 @@ export default function Forensics() {
 
         <div className="mt-4 p-3 rounded-md bg-muted/50 border border-border">
           <p className="text-[12px] font-mono text-muted-foreground">
-            score = 100 &minus; (coupling × 45) &minus; (churnRisk × 45) + (confidence × 10)
+            score = 100 &minus; (coupling × 35) &minus; (churnRisk × 35) &minus; (smells × 20) + (confidence × 10)
           </p>
           <p className="text-[12px] font-mono text-foreground mt-1">
-            = 100 &minus; ({data.signals.coupling.normalized.toFixed(3)} × 45) &minus;{" "}
-            ({data.signals.churnRisk.normalized.toFixed(3)} × 45) +{" "}
+            = 100 &minus; ({data.signals.coupling.normalized.toFixed(3)} × 35) &minus;{" "}
+            ({data.signals.churnRisk.normalized.toFixed(3)} × 35) &minus;{" "}
+            ({(data.smells?.normalized ?? 0).toFixed(3)} × 20) +{" "}
             ({data.signals.confidence.normalized.toFixed(3)} × 10) ={" "}
             <span className="font-semibold">{Math.round(data.score)}</span>
           </p>
@@ -583,19 +596,31 @@ function StatBlock({
   label,
   value,
   sub,
+  description,
 }: {
   icon: any;
   label: string;
   value: string | number;
   sub?: string;
+  /** Optional one-line explanation revealed on click. */
+  description?: string;
 }) {
-  return (
-    <div className="clay-card p-4">
+  const [expanded, setExpanded] = useState(false);
+  const interactive = !!description;
+
+  const body = (
+    <>
       <div className="flex items-center gap-1.5 mb-2">
         <Icon className="w-3 h-3 text-muted-foreground" />
         <span className="text-[10.5px] uppercase tracking-[0.06em] font-medium text-muted-foreground">
           {label}
         </span>
+        {interactive && (
+          <Info
+            className={`w-2.5 h-2.5 ml-auto text-muted-foreground transition-opacity ${expanded ? "opacity-100" : "opacity-50"}`}
+            aria-hidden="true"
+          />
+        )}
       </div>
       <p className="text-[22px] font-semibold tracking-tight tabular-nums leading-none">
         {value}
@@ -603,7 +628,28 @@ function StatBlock({
       {sub && (
         <p className="text-[11px] text-muted-foreground mt-1.5">{sub}</p>
       )}
-    </div>
+      {interactive && expanded && (
+        <p className="text-[11px] text-muted-foreground mt-2.5 leading-relaxed">
+          {description}
+        </p>
+      )}
+    </>
+  );
+
+  if (!interactive) {
+    return <div className="clay-card p-4">{body}</div>;
+  }
+
+  return (
+    <button
+      type="button"
+      onClick={() => setExpanded((v) => !v)}
+      aria-expanded={expanded}
+      aria-label={`${label}: ${value}. ${expanded ? "Hide" : "Show"} explanation.`}
+      className="clay-card p-4 text-left w-full cursor-pointer hover:bg-muted/30 transition-colors focus:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+    >
+      {body}
+    </button>
   );
 }
 
