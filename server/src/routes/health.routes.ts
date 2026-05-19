@@ -6,6 +6,7 @@ import {
   getCommitData,
   getEvidence,
   getCosts,
+  getInsights,
 } from "../controllers/health.controller";
 
 const router = Router();
@@ -17,6 +18,7 @@ router.get("/costs", getCosts);
 router.get("/:repoId/latest", getHealthSnapshot);
 router.get("/:repoId/history", getHealthHistory);
 router.get("/:repoId/evidence", getEvidence);
+router.get("/:repoId/insights", getInsights);
 router.get("/:repoId/costs", getCosts);
 router.get("/:repoId/commit/:commitSha", getCommitData);
 

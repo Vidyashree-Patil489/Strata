@@ -7,7 +7,12 @@
  * link, for the Forensics page.
  */
 import { githubAppFetch } from "../../utils/github";
-import { callLLM, type CallLLMOptions, computeCost } from "../../services/ai.service";
+import {
+  callLLM,
+  type CallLLMOptions,
+  computeCost,
+  lookupModelPricing,
+} from "../../services/ai.service";
 import { RepoContext } from "../../models/RepoContext";
 import { LLMUsage } from "../../models/LLMUsage";
 import type { Types } from "mongoose";
@@ -121,10 +126,14 @@ ${prBlock}`;
   });
   const llmDurationMs = Date.now() - llmStart;
 
-  // 3. Record cost + raw response BEFORE parsing
+  // 3. Record cost + raw response BEFORE parsing.
+  // See patterns.ts for the rationale on requested-model vs response-model:
+  // we use the requested id for cost lookup, keep res.model as audit data.
   const inputTokens = res.usage?.inputTokens ?? 0;
   const outputTokens = res.usage?.outputTokens ?? 0;
-  const costUsd = computeCost(res.model, inputTokens, outputTokens);
+  const requestedModel = opts.llmOptions.model;
+  const costUsd = computeCost(requestedModel, inputTokens, outputTokens);
+  const pricingMatch = lookupModelPricing(requestedModel).match;
 
   const prNumbers = mergedPRs.map((p) => p.number);
   const usageDoc = await LLMUsage.create({
@@ -137,6 +146,7 @@ ${prBlock}`;
     inputTokens,
     outputTokens,
     costUsd,
+    pricingMatch,
     durationMs: llmDurationMs,
     promptPreview: prompt.slice(0, PROMPT_PREVIEW_CAP),
     inputs: { prsAnalyzed: prNumbers },

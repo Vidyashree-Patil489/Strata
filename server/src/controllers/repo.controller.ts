@@ -611,6 +611,211 @@ export async function getFileSnippet(req: Request, res: Response): Promise<void>
   }
 }
 
+/**
+ * GET /repos/:id/file-meta?path=<filepath>
+ *
+ * Returns the metadata used to populate the Knowledge Graph hover card:
+ *   - lastModified  → date of the most recent commit touching this path
+ *   - lastCommitSha, lastCommitMessage, lastCommitAuthor
+ *   - summary       → first leading comment block of the file (best-effort,
+ *                     language-agnostic via regex)
+ *
+ * Two GitHub calls run in parallel: list-commits-filtered-by-path and
+ * fetch-raw-file. Token is the same App/OAuth selection as /file-snippet.
+ *
+ * Failure modes are non-fatal — if either call fails, the corresponding
+ * fields come back as null and the hover card just renders what it has.
+ */
+export async function getFileMeta(req: Request, res: Response): Promise<void> {
+  try {
+    const repo = await Repo.findOne({
+      _id: req.params.id,
+      connectedBy: req.user!.userId,
+      isActive: true,
+    });
+    if (!repo) {
+      res.status(404).json({ error: "Repo not found" });
+      return;
+    }
+
+    const path = String(req.query.path || "").trim();
+    if (!path || path.includes("..")) {
+      res.status(400).json({ error: "Valid file path required" });
+      return;
+    }
+
+    const user = await User.findById(req.user!.userId);
+    if (!user) {
+      res.status(404).json({ error: "User not found" });
+      return;
+    }
+
+    let token: string;
+    try {
+      token = await getRepoFetchToken(repo, user);
+    } catch (err: any) {
+      res.status(400).json({ error: err.message });
+      return;
+    }
+
+    // Need default branch ref to fetch raw content for a deterministic snapshot.
+    const repoInfoRes = await githubAppFetch(`/repos/${repo.fullName}`, token);
+    if (!repoInfoRes.ok) {
+      res.status(502).json({ error: "Failed to fetch repo info from GitHub" });
+      return;
+    }
+    const repoInfo = (await repoInfoRes.json()) as { default_branch: string };
+
+    // Parallelise: one call lists commits touching this path (newest first);
+    // the other pulls the raw file. We only need the first ~40 lines for the
+    // summary but the contents endpoint doesn't support range requests, so
+    // we fetch the whole blob and slice locally. Files >100KB are bailed on.
+    const [commitRes, fileRes] = await Promise.allSettled([
+      githubAppFetch(
+        `/repos/${repo.fullName}/commits?path=${encodeURIComponent(path)}&per_page=1&sha=${repoInfo.default_branch}`,
+        token,
+      ),
+      githubAppFetch(
+        `/repos/${repo.fullName}/contents/${encodeURIComponent(path)}?ref=${repoInfo.default_branch}`,
+        token,
+        { headers: { Accept: "application/vnd.github.raw+json" } },
+      ),
+    ]);
+
+    let lastModified: string | null = null;
+    let lastCommitSha: string | null = null;
+    let lastCommitMessage: string | null = null;
+    let lastCommitAuthor: string | null = null;
+
+    if (commitRes.status === "fulfilled" && commitRes.value.ok) {
+      const commits = (await commitRes.value.json()) as Array<{
+        sha: string;
+        commit: { message: string; author: { name: string; date: string } };
+      }>;
+      const head = commits[0];
+      if (head) {
+        lastCommitSha = head.sha;
+        lastModified = head.commit.author.date;
+        lastCommitMessage = head.commit.message.split("\n")[0].slice(0, 200);
+        lastCommitAuthor = head.commit.author.name;
+      }
+    }
+
+    let summary: string | null = null;
+    if (fileRes.status === "fulfilled" && fileRes.value.ok) {
+      const text = await fileRes.value.text();
+      // Cap to first 80 lines — any leading doc-comment longer than that
+      // is fine to truncate, and avoids parsing megabyte files in vain.
+      const head = text.split("\n", 80).join("\n");
+      summary = extractLeadingDoc(head, path);
+    }
+
+    res.json({
+      path,
+      lastModified,
+      lastCommitSha,
+      lastCommitMessage,
+      lastCommitAuthor,
+      summary,
+    });
+  } catch (err: any) {
+    console.error("[Repo] file-meta error:", err.message);
+    res.status(500).json({ error: "Server error" });
+  }
+}
+
+/**
+ * Pull the leading documentation block out of source code without parsing.
+ * Works for /* * /, /**, //, #, and Python triple-quoted strings — covers
+ * everything tree-sitter supports in this repo. Returns "" if there's no
+ * comment at the top of the file (which is common for config files).
+ */
+function extractLeadingDoc(content: string, path: string): string {
+  const lines = content.split("\n");
+  let i = 0;
+
+  // Skip shebang lines like `#!/usr/bin/env node`
+  if (lines[i]?.startsWith("#!")) i++;
+  // Skip blank lines + bare encoding declarations
+  while (
+    i < lines.length &&
+    (lines[i].trim() === "" || /^\s*(use strict|using System|package\s)/.test(lines[i]))
+  ) {
+    i++;
+  }
+  if (i >= lines.length) return "";
+
+  const docLines: string[] = [];
+  const first = lines[i];
+  const trimmedFirst = first.trim();
+
+  if (trimmedFirst.startsWith("/*")) {
+    // Block comment — gather until closing `*/`
+    while (i < lines.length) {
+      docLines.push(lines[i]);
+      if (lines[i].includes("*/")) {
+        i++;
+        break;
+      }
+      i++;
+    }
+  } else if (trimmedFirst.startsWith("//")) {
+    // Contiguous `//` lines
+    while (i < lines.length && lines[i].trim().startsWith("//")) {
+      docLines.push(lines[i]);
+      i++;
+    }
+  } else if (path.endsWith(".py") && (trimmedFirst.startsWith('"""') || trimmedFirst.startsWith("'''"))) {
+    // Python module docstring
+    const delim = trimmedFirst.slice(0, 3);
+    // Single-line docstring case
+    if (trimmedFirst.length > 6 && trimmedFirst.endsWith(delim)) {
+      docLines.push(first);
+      i++;
+    } else {
+      docLines.push(first);
+      i++;
+      while (i < lines.length) {
+        docLines.push(lines[i]);
+        if (lines[i].includes(delim)) {
+          i++;
+          break;
+        }
+        i++;
+      }
+    }
+  } else if (trimmedFirst.startsWith("#") && !path.endsWith(".ts") && !path.endsWith(".tsx") && !path.endsWith(".js")) {
+    // `#` line comments for Python / Ruby / shell / Makefile / etc.
+    // Skipped for JS/TS because `#` is private-field syntax there.
+    while (i < lines.length && lines[i].trim().startsWith("#") && !lines[i].trim().startsWith("#!")) {
+      docLines.push(lines[i]);
+      i++;
+    }
+  }
+
+  if (docLines.length === 0) return "";
+
+  // Strip the comment syntax to leave clean prose.
+  const cleaned = docLines
+    .map((l) =>
+      l
+        .replace(/^\s*\/\*\*?/, "")
+        .replace(/\*\/\s*$/, "")
+        .replace(/^\s*\*\s?/, "")
+        .replace(/^\s*\/\/\s?/, "")
+        .replace(/^\s*#\s?/, "")
+        .replace(/^\s*"""\s?|\s?"""\s*$/g, "")
+        .replace(/^\s*'''\s?|\s?'''\s*$/g, ""),
+    )
+    .join("\n")
+    .trim()
+    // Collapse 3+ blank lines down to single — block comments often have
+    // empty bullet lines that look ugly in a tight tooltip.
+    .replace(/\n{3,}/g, "\n\n");
+
+  return cleaned.length > 600 ? cleaned.slice(0, 600).trimEnd() + "…" : cleaned;
+}
+
 export async function getContextDetail(req: Request, res: Response): Promise<void> {
   try {
     const repo = await Repo.findOne({

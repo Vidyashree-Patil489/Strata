@@ -10,7 +10,12 @@
  * link back to the LLMUsage row that records cost.
  */
 import { githubAppFetch } from "../../utils/github";
-import { callLLM, type CallLLMOptions, computeCost } from "../../services/ai.service";
+import {
+  callLLM,
+  type CallLLMOptions,
+  computeCost,
+  lookupModelPricing,
+} from "../../services/ai.service";
 import { RepoContext } from "../../models/RepoContext";
 import { LLMUsage } from "../../models/LLMUsage";
 import type { Types } from "mongoose";
@@ -195,9 +200,18 @@ ${filesBlock}`;
 
   // 5. Record cost + raw response BEFORE parsing, so we keep evidence even
   // if parsing fails downstream.
+  //
+  // Cost-lookup nuance: use the *requested* model id (opts.llmOptions.model)
+  // — that's the bare key the user picked from AVAILABLE_MODELS and matches
+  // MODEL_PRICING. The *response* model (res.model) is what providers
+  // actually billed against (often date-pinned like "gpt-4.1-mini-2025-04-14")
+  // — we keep it on the LLMUsage row for audit but it's the wrong key for
+  // a direct pricing lookup.
   const inputTokens = res.usage?.inputTokens ?? 0;
   const outputTokens = res.usage?.outputTokens ?? 0;
-  const costUsd = computeCost(res.model, inputTokens, outputTokens);
+  const requestedModel = opts.llmOptions.model;
+  const costUsd = computeCost(requestedModel, inputTokens, outputTokens);
+  const pricingMatch = lookupModelPricing(requestedModel).match;
 
   const sampledPaths = fileContents.map((f) => f.path);
   const usageDoc = await LLMUsage.create({
@@ -210,6 +224,7 @@ ${filesBlock}`;
     inputTokens,
     outputTokens,
     costUsd,
+    pricingMatch,
     durationMs: llmDurationMs,
     promptPreview: prompt.slice(0, PROMPT_PREVIEW_CAP),
     inputs: { filesAnalyzed: sampledPaths },

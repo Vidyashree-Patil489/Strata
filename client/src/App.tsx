@@ -10,6 +10,7 @@ import Settings from "./pages/Settings";
 import RepoHealth from "./pages/RepoHealth";
 import KnowledgeGraph from "./pages/KnowledgeGraph";
 import Forensics from "./pages/Forensics";
+import Insights from "./pages/Insights";
 import CommitDiff from "./pages/CommitDiff";
 
 function App() {
@@ -58,6 +59,16 @@ function App() {
                 <ProtectedRoute>
                   <DashboardLayout>
                     <Forensics />
+                  </DashboardLayout>
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/dashboard/insights"
+              element={
+                <ProtectedRoute>
+                  <DashboardLayout>
+                    <Insights />
                   </DashboardLayout>
                 </ProtectedRoute>
               }

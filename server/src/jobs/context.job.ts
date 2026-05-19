@@ -22,6 +22,8 @@ import { runPatternExtractor } from "../agents/context/patterns";
 import { runHistorySummarizer } from "../agents/context/history";
 import FilePushHistory from "../models/FilePushHistory";
 import { computeAndSaveHealthScore } from "../services/healthScore.service";
+import { fetchBranchSnapshot } from "../services/branch.service";
+import { fetchContributorSnapshot } from "../services/contributor.service";
 import { extractGraphAtCommit } from "../agents/context/graph-snapshot";
 import { RepoGraphSnapshot } from "../models/RepoGraphSnapshot";
 import mongoose from "mongoose";
@@ -325,11 +327,39 @@ async function processContextJobInner(
     }
     await job.updateProgress(100);
 
+    // Branch + contributor snapshots — fetched after indexer + LLM agents,
+    // before health score (which derives both analyses from these stored
+    // payloads). Run in parallel — independent GitHub calls. Best-effort:
+    // any failure just leaves the corresponding ctx field empty and the
+    // Forensics section shows its empty state.
+    const [branchSnapshot, contributorSnapshot] = await Promise.all([
+      fetchBranchSnapshot(repoFullName, installationToken).catch((err) => {
+        console.warn(`[ContextJob] Branch snapshot failed (non-fatal): ${err.message}`);
+        return null;
+      }),
+      fetchContributorSnapshot(repoFullName, installationToken).catch((err) => {
+        console.warn(`[ContextJob] Contributor snapshot failed (non-fatal): ${err.message}`);
+        return null;
+      }),
+    ]);
+    if (branchSnapshot) {
+      console.log(
+        `[ContextJob] Branch snapshot: ${branchSnapshot.branches.length} branches${branchSnapshot.truncated ? " (truncated)" : ""}`,
+      );
+    }
+    if (contributorSnapshot) {
+      console.log(
+        `[ContextJob] Contributor snapshot: ${contributorSnapshot.contributors.length} contributors over ${contributorSnapshot.recentWindow}-commit window${contributorSnapshot.truncated ? " (truncated)" : ""}`,
+      );
+    }
+
     // Mark ready, save push history, compute health score
     const ctx = await RepoContext.findOne({ repoId: repo._id });
     if (ctx) {
       ctx.indexStatus = "ready";
       ctx.lastIndexedAt = new Date();
+      if (branchSnapshot) ctx.branchSnapshot = branchSnapshot;
+      if (contributorSnapshot) ctx.contributorSnapshot = contributorSnapshot;
       await ctx.save();
 
       await FilePushHistory.create({

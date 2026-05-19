@@ -16,6 +16,14 @@ import mongoose, { Schema, Document, Types } from "mongoose";
 
 export type LLMTaskType = "pattern_extractor" | "history_summarizer";
 
+/**
+ * How the cost was looked up.
+ *   exact      — model string matched a key in MODEL_PRICING directly
+ *   normalized — matched only after stripping a date/preview suffix
+ *   unknown    — no pricing entry; cost recorded as 0 but flagged
+ */
+export type PricingMatch = "exact" | "normalized" | "unknown";
+
 export interface ILLMUsage extends Document {
   repoId: Types.ObjectId;
   userId: Types.ObjectId;
@@ -26,6 +34,8 @@ export interface ILLMUsage extends Document {
   inputTokens: number;
   outputTokens: number;
   costUsd: number;
+  /** Set on new rows; older rows default to "exact" for backwards compat. */
+  pricingMatch: PricingMatch;
   durationMs: number;
   /**
    * First ~200 chars of the prompt that was sent. Lets the Forensics
@@ -63,6 +73,11 @@ const llmUsageSchema = new Schema<ILLMUsage>(
     inputTokens:  { type: Number, default: 0 },
     outputTokens: { type: Number, default: 0 },
     costUsd:      { type: Number, default: 0 },
+    pricingMatch: {
+      type: String,
+      enum: ["exact", "normalized", "unknown"],
+      default: "exact",
+    },
     durationMs:   { type: Number, default: 0 },
     promptPreview: { type: String, default: "" },
     inputs:       { type: Schema.Types.Mixed, default: {} },

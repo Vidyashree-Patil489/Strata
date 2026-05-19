@@ -10,6 +10,7 @@ import {
   getContextStatus,
   getContextDetail,
   getFileSnippet,
+  getFileMeta,
 } from "../controllers/repo.controller";
 import { authMiddleware } from "../middlewares/auth";
 import { contextIndexLimiter } from "../middlewares/rateLimit";
@@ -27,5 +28,6 @@ router.patch("/:id/settings", updateRepoSettings);
 router.post("/:id/index", contextIndexLimiter, triggerContextIndex);
 router.get("/:id/context-detail", getContextDetail);
 router.get("/:id/file-snippet", getFileSnippet);
+router.get("/:id/file-meta", getFileMeta);
 
 export default router;

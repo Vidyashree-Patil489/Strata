@@ -38,6 +38,61 @@ export interface IHistorySummaryDetail {
   llmUsageId?: Types.ObjectId;
 }
 
+/**
+ * Raw branch info fetched from GitHub at index time. Stored verbatim on
+ * RepoContext so health-score-time analysis (branch hygiene classification)
+ * can be a pure derivation, parallel to how smells derive from graphEdges.
+ */
+export interface IBranchInfo {
+  name: string;
+  sha: string;
+  lastCommitAt: Date | null;
+  lastCommitAuthor: string | null;
+  lastCommitMessage: string | null;
+  isDefault: boolean;
+  isProtected: boolean;
+  hasOpenPR: boolean;
+  openPRNumber: number | null;
+}
+
+export interface IBranchSnapshot {
+  defaultBranch: string;
+  branches: IBranchInfo[];
+  fetchedAt: Date;
+  /** True if we hit GitHub's pagination limit (more branches not fetched). */
+  truncated: boolean;
+}
+
+/**
+ * Per-contributor info fetched from GitHub at index time. Mirrors the
+ * IBranchInfo / IBranchSnapshot pattern so score-time analysis remains a
+ * pure derivation.
+ */
+export interface IContributorInfo {
+  login: string;
+  name: string | null;
+  avatarUrl: string;
+  htmlUrl: string;
+  /** Total commits per GitHub's /contributors endpoint (lifetime). */
+  contributions: number;
+  /** True if GitHub flagged the account as type=Bot. */
+  isBot: boolean;
+  /** From the last-N commits scan; null if no recent commits by this author. */
+  lastCommitAt: Date | null;
+  lastCommitSha: string | null;
+  /** # of commits authored within the recent-commits window. */
+  recentCommits: number;
+}
+
+export interface IContributorSnapshot {
+  contributors: IContributorInfo[];
+  /** Total commits scanned to determine recent activity. */
+  recentWindow: number;
+  fetchedAt: Date;
+  /** True if we hit pagination limits (more contributors not fetched). */
+  truncated: boolean;
+}
+
 export interface IRepoContext extends Document {
   repoId: Types.ObjectId;
   repoMap: string;
@@ -55,6 +110,15 @@ export interface IRepoContext extends Document {
   recentHistoryDetailed: IHistorySummaryDetail[];
 
   recentChangedFiles: string[];
+
+  // Branch state snapshot — fetched at index time, derived at score time.
+  // Empty/null on older RepoContext docs from before this field existed.
+  branchSnapshot: IBranchSnapshot | null;
+
+  // Contributor snapshot — same pattern as branches: GitHub fetch at index
+  // time, derivation at score time.
+  contributorSnapshot: IContributorSnapshot | null;
+
   lastIndexedAt: Date | null;
   indexStatus: IndexStatus;
   createdAt: Date;
@@ -100,6 +164,56 @@ const historySummaryDetailSchema = new Schema<IHistorySummaryDetail>(
   { _id: false },
 );
 
+const branchInfoSchema = new Schema<IBranchInfo>(
+  {
+    name:               { type: String, required: true },
+    sha:                { type: String, required: true },
+    lastCommitAt:       { type: Date, default: null },
+    lastCommitAuthor:   { type: String, default: null },
+    lastCommitMessage:  { type: String, default: null },
+    isDefault:          { type: Boolean, default: false },
+    isProtected:        { type: Boolean, default: false },
+    hasOpenPR:          { type: Boolean, default: false },
+    openPRNumber:       { type: Number, default: null },
+  },
+  { _id: false },
+);
+
+const branchSnapshotSchema = new Schema<IBranchSnapshot>(
+  {
+    defaultBranch: { type: String, default: "" },
+    branches:      { type: [branchInfoSchema], default: [] },
+    fetchedAt:     { type: Date, default: Date.now },
+    truncated:     { type: Boolean, default: false },
+  },
+  { _id: false },
+);
+
+const contributorInfoSchema = new Schema<IContributorInfo>(
+  {
+    login:          { type: String, required: true },
+    name:           { type: String, default: null },
+    avatarUrl:      { type: String, default: "" },
+    htmlUrl:        { type: String, default: "" },
+    contributions:  { type: Number, default: 0 },
+    isBot:          { type: Boolean, default: false },
+    lastCommitAt:   { type: Date, default: null },
+    lastCommitSha:  { type: String, default: null },
+    recentCommits:  { type: Number, default: 0 },
+  },
+  { _id: false },
+);
+
+const contributorSnapshotSchema = new Schema<IContributorSnapshot>(
+  {
+    contributors: { type: [contributorInfoSchema], default: [] },
+    recentWindow: { type: Number, default: 0 },
+    fetchedAt:    { type: Date, default: Date.now },
+    truncated:    { type: Boolean, default: false },
+  },
+  { _id: false },
+);
+
 const repoContextSchema = new Schema<IRepoContext>(
   {
     repoId: {
@@ -118,6 +232,8 @@ const repoContextSchema = new Schema<IRepoContext>(
     conventionsDetailed: { type: [conventionDetailSchema], default: [] },
     recentHistoryDetailed: { type: [historySummaryDetailSchema], default: [] },
     recentChangedFiles: { type: [String], default: [] },
+    branchSnapshot: { type: branchSnapshotSchema, default: null },
+    contributorSnapshot: { type: contributorSnapshotSchema, default: null },
     lastIndexedAt: { type: Date, default: null },
     indexStatus: {
       type: String,

@@ -143,26 +143,110 @@ export const MODEL_PRICING: Record<string, ModelPricing> = {
 };
 
 /**
- * Compute the USD cost of a single LLM call, given model + token counts.
- * Returns 0 (with a console.warn) if we don't have pricing for the model
- * — better than throwing in the middle of a job. The Forensics page will
- * show $0.00 with a note that pricing is unknown.
+ * Strip common suffixes providers tack onto resolved model strings so they
+ * match the bare keys in MODEL_PRICING.
+ *
+ *   gpt-4.1-mini-2025-04-14        → gpt-4.1-mini
+ *   gpt-4o-mini-2024-07-18         → gpt-4o-mini
+ *   claude-sonnet-4-20250514       → claude-sonnet-4-20250514  (already exact)
+ *   gemini-2.5-flash-latest        → gemini-2.5-flash
+ *   gemini-3-flash-preview-0207    → gemini-3-flash-preview
+ */
+export function normalizeModelId(model: string): string {
+  let n = model.trim();
+  // Strip "-YYYY-MM-DD" or "-YYYYMMDD" date suffixes appended by OpenAI/Anthropic.
+  n = n.replace(/-(\d{4}-\d{2}-\d{2}|\d{8})$/, "");
+  // Strip "-latest" pins.
+  n = n.replace(/-latest$/, "");
+  // Strip trailing alias suffixes ("-0207", "-001", …) that some providers use.
+  // Only when the base (without the suffix) is already a known key — never
+  // strip blindly.
+  if (!MODEL_PRICING[n]) {
+    const stripped = n.replace(/-\d{2,4}$/, "");
+    if (MODEL_PRICING[stripped]) n = stripped;
+  }
+  return n;
+}
+
+/**
+ * Lookup pricing for a model with progressive fallback. Returns the matched
+ * canonical key and a quality flag so callers can mark costs as estimated
+ * when we couldn't find an exact entry.
+ */
+export function lookupModelPricing(model: string): {
+  pricing: ModelPricing | null;
+  canonical: string;
+  match: "exact" | "normalized" | "unknown";
+} {
+  if (MODEL_PRICING[model]) {
+    return { pricing: MODEL_PRICING[model], canonical: model, match: "exact" };
+  }
+  const normalized = normalizeModelId(model);
+  if (normalized !== model && MODEL_PRICING[normalized]) {
+    return {
+      pricing: MODEL_PRICING[normalized],
+      canonical: normalized,
+      match: "normalized",
+    };
+  }
+  return { pricing: null, canonical: model, match: "unknown" };
+}
+
+/**
+ * Compute the USD cost of a single LLM call. Tries the model string as-is,
+ * then a normalised form (suffix-stripped), then returns 0 with a loud
+ * warning. The companion `lookupModelPricing` lets callers also record
+ * *why* a cost came out the way it did (exact / normalized / unknown), so
+ * the Forensics page can distinguish a real $0.00 (didn't run) from an
+ * unknown-pricing $0.00 (we don't have rates for this model).
  */
 export function computeCost(
   model: string,
   inputTokens: number,
   outputTokens: number,
 ): number {
-  const price = MODEL_PRICING[model];
-  if (!price) {
-    console.warn(`[Cost] No pricing for model "${model}" — recording $0`);
+  const { pricing, canonical, match } = lookupModelPricing(model);
+  if (!pricing) {
+    console.warn(
+      `[Cost] No pricing for model "${model}" (normalized "${canonical}") — recording $0`,
+    );
     return 0;
   }
+  if (match === "normalized") {
+    console.log(
+      `[Cost] Resolved "${model}" → "${canonical}" via normalization`,
+    );
+  }
   // Prices are per 1M tokens
-  const inputCost = (inputTokens / 1_000_000) * price.input;
-  const outputCost = (outputTokens / 1_000_000) * price.output;
+  const inputCost = (inputTokens / 1_000_000) * pricing.input;
+  const outputCost = (outputTokens / 1_000_000) * pricing.output;
   return inputCost + outputCost;
 }
+
+/**
+ * Boot-time sanity check: every model in AVAILABLE_MODELS must have a
+ * pricing entry. Loud-warns to console on mismatch so a missing entry
+ * doesn't silently degrade cost accuracy. Returns the list of offenders
+ * (used by tests if we add them later).
+ */
+export function assertPricingCoverage(): string[] {
+  const missing: string[] = [];
+  for (const provider of Object.keys(AVAILABLE_MODELS) as AIProvider[]) {
+    for (const model of AVAILABLE_MODELS[provider]) {
+      if (!MODEL_PRICING[model]) missing.push(`${provider}/${model}`);
+    }
+  }
+  if (missing.length > 0) {
+    console.warn(
+      `[Cost] MODEL_PRICING is missing entries for ${missing.length} model(s) listed in AVAILABLE_MODELS: ${missing.join(", ")}`,
+    );
+  }
+  return missing;
+}
+
+// Run the assertion on module load so a stale pricing table is surfaced
+// at boot, not silently per-call.
+assertPricingCoverage();
 
 export const EMBEDDING_MODELS: Record<"openai" | "gemini", string> = {
   openai: "text-embedding-3-small",

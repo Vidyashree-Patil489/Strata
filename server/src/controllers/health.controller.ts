@@ -4,6 +4,7 @@ import FilePushHistory from "../models/FilePushHistory";
 import { Repo } from "../models/Repo";
 import { RepoContext } from "../models/RepoContext";
 import { LLMUsage } from "../models/LLMUsage";
+import { generateInsights } from "../services/insights.service";
 import mongoose from "mongoose";
 
 export async function getHealthSnapshot(req: Request, res: Response) {
@@ -209,6 +210,27 @@ export async function getEvidence(req: Request, res: Response) {
           churnPushes: 0,
           totalRecentPushes: 0,
         })),
+    smells: snapshot.smells ?? { hitCount: 0, normalized: 0 },
+    smellsDetailed: snapshot.smellsDetailed ?? [],
+    branches: snapshot.branches ?? {
+      total: 0,
+      active: 0,
+      idle: 0,
+      stale: 0,
+      abandoned: 0,
+      fetchedAt: null,
+    },
+    branchesDetailed: snapshot.branchesDetailed ?? [],
+    contributors: snapshot.contributors ?? {
+      total: 0,
+      activeCount: 0,
+      botCount: 0,
+      busFactor: 0,
+      recentWindow: 0,
+      totalCommits: 0,
+      fetchedAt: null,
+    },
+    contributorsDetailed: snapshot.contributorsDetailed ?? [],
     conventions: ctx?.conventionsDetailed?.length
       ? ctx.conventionsDetailed
       : (ctx?.conventions ?? []).map((text) => ({
@@ -238,6 +260,7 @@ export async function getEvidence(req: Request, res: Response) {
       inputTokens: u.inputTokens,
       outputTokens: u.outputTokens,
       costUsd: u.costUsd,
+      pricingMatch: u.pricingMatch ?? "exact",
       durationMs: u.durationMs,
       promptPreview: u.promptPreview,
       inputs: u.inputs,
@@ -369,4 +392,34 @@ export async function getCommitData(req: Request, res: Response) {
       fileDiffs: push.fileDiffs || [],
     },
   });
+}
+
+/**
+ * GET /health/:repoId/insights
+ *
+ * Synthesises everything the 4 indexing agents produced (definitions, edges,
+ * conventions, history, snapshots, smells, pushes) and returns cards from
+ * 6 analyzer lenses. No extra LLM calls, no extra GitHub roundtrips.
+ */
+export async function getInsights(req: Request, res: Response) {
+  const repoId = String(req.params.repoId);
+
+  if (!mongoose.Types.ObjectId.isValid(repoId))
+    return res.status(400).json({ error: "Invalid repoId" });
+
+  const repo = await Repo.findOne({
+    _id: repoId,
+    connectedBy: req.user!.userId,
+    isActive: true,
+  });
+  if (!repo) return res.status(404).json({ error: "Repo not found" });
+
+  try {
+    const data = await generateInsights(repo._id as mongoose.Types.ObjectId);
+    return res.json(data);
+  } catch (err: any) {
+    return res
+      .status(500)
+      .json({ error: err.message || "Failed to generate insights" });
+  }
 }

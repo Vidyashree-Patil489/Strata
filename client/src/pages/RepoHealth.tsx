@@ -375,16 +375,30 @@ export default function RepoHealth() {
         )}
       </div>
 
-      {history.length > 1 && (
-        <div className="mb-3">
+      <div className="mb-3">
+        {history.length > 0 ? (
           <SignalTrendChart data={history} />
-        </div>
-      )}
-      {history.length > 1 && (
-        <div className="mb-3">
-          <CodebaseGrowthChart data={history} />
-        </div>
-      )}
+        ) : (
+          <div className="clay-card p-5">
+            <p className="text-[12px] font-medium mb-1">Signal breakdown</p>
+            <p className="text-[11px] text-muted-foreground">
+              No snapshots yet. Re-index this repo to populate signals.
+            </p>
+          </div>
+        )}
+      </div>
+      <div className="mb-3">
+        {snapshot.recentPushes && snapshot.recentPushes.length > 0 ? (
+          <CodebaseGrowthChart pushes={snapshot.recentPushes} />
+        ) : (
+          <div className="clay-card p-5">
+            <p className="text-[12px] font-medium mb-1">Push activity</p>
+            <p className="text-[11px] text-muted-foreground">
+              No pushes recorded yet for this repo.
+            </p>
+          </div>
+        )}
+      </div>
 
       {snapshot.hotFiles.length > 0 && <HotFileList files={snapshot.hotFiles} />}
     </div>

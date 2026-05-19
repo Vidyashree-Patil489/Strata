@@ -11,11 +11,13 @@ import {
   Menu,
   X,
   Share2,
+  Lightbulb,
 } from "lucide-react";
 import { StrataMark } from "./StrataMark";
 
 const NAV_ITEMS = [
   { label: "Health",          icon: BarChart2,  path: "/dashboard" },
+  { label: "Repo insights",   icon: Lightbulb,  path: "/dashboard/insights" },
   { label: "Knowledge graph", icon: Share2,     path: "/dashboard/graph" },
   { label: "Forensics",       icon: Search,     path: "/dashboard/forensics" },
   { label: "Repos",           icon: FolderGit2, path: "/dashboard/repos" },

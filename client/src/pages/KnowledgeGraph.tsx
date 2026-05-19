@@ -645,6 +645,7 @@ export default function KnowledgeGraph() {
                 edges={renderEdges}
                 showDiff={mode === "diff"}
                 layout={layout}
+                repoId={activeRepoId}
               />
             </div>
           )}

@@ -1,11 +1,13 @@
 import {
-  LineChart,
-  Line,
+  BarChart,
+  Bar,
   XAxis,
   YAxis,
   Tooltip,
   ResponsiveContainer,
   CartesianGrid,
+  Cell,
+  LabelList,
 } from "recharts";
 
 interface DataPoint {
@@ -20,93 +22,88 @@ interface Props {
   data: DataPoint[];
 }
 
-const SERIES = [
-  { key: "coupling", name: "Coupling", color: "var(--chart-3)" },     // amber
-  { key: "churnRisk", name: "Churn risk", color: "var(--destructive)" },
-  { key: "debt", name: "Debt", color: "var(--chart-4)" },             // pink
-  { key: "confidence", name: "Confidence", color: "var(--chart-5)" }, // green
+const SIGNALS = [
+  { key: "coupling",   name: "Coupling",    color: "#a16207", desc: "Gini of PageRank — lower is better" },
+  { key: "churnRisk",  name: "Churn risk",  color: "#b91c1c", desc: "Hot-file count — lower is better" },
+  { key: "debt",       name: "Debt",        color: "#be185d", desc: "Reserved · default 0" },
+  { key: "confidence", name: "Confidence",  color: "#15803d", desc: "Reserved · default 70%" },
 ];
 
-const CustomTooltip = ({ active, payload, label }: any) => {
+const CustomTooltip = ({ active, payload }: any) => {
   if (!active || !payload?.length) return null;
+  const p = payload[0].payload;
   return (
     <div className="bg-card border border-border rounded-md px-2.5 py-1.5 text-[11px] shadow-sm">
-      <p className="text-muted-foreground mb-1">{label}</p>
-      {payload.map((p: any, i: number) => (
-        <p key={i} className="font-medium tabular-nums" style={{ color: p.color }}>
-          {p.name}: {Math.round(p.value * 100)}%
-        </p>
-      ))}
+      <p className="font-medium text-foreground">{p.name}</p>
+      <p className="font-mono tabular-nums" style={{ color: p.color }}>
+        {Math.round(p.value * 100)}%
+      </p>
+      <p className="text-[10.5px] text-muted-foreground mt-0.5">{p.desc}</p>
     </div>
   );
 };
 
 export function SignalTrendChart({ data }: Props) {
-  const formatted = data.map((d) => ({
-    date: new Date(d.computedAt).toLocaleDateString("en-US", {
-      month: "short",
-      day: "numeric",
-    }),
-    coupling: d.coupling,
-    churnRisk: d.churnRisk,
-    debt: d.debt,
-    confidence: d.confidence,
-  }));
+  if (data.length === 0) return null;
 
-  if (formatted.length === 0) return null;
+  // Take the latest snapshot — bars will always be distinct heights for the
+  // four signals, so the chart always reads as "alive" even with one snapshot.
+  const latest = data[data.length - 1];
+  const bars = SIGNALS.map((s) => ({
+    name: s.name,
+    value: (latest as any)[s.key] as number,
+    color: s.color,
+    desc: s.desc,
+  }));
 
   return (
     <div className="clay-card p-5">
       <div className="flex items-baseline justify-between mb-4">
-        <p className="text-[12px] font-medium">Signal trends</p>
-        <p className="text-[11px] text-muted-foreground">Normalized 0–100%</p>
+        <p className="text-[12px] font-medium">Signal breakdown</p>
+        <p className="text-[11px] text-muted-foreground">
+          Latest snapshot · {data.length}{" "}
+          {data.length === 1 ? "indexing run" : "indexing runs"}
+        </p>
       </div>
 
-      <ResponsiveContainer width="100%" height={200}>
-        <LineChart data={formatted} margin={{ left: -10, right: 8, top: 4 }}>
-          <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
+      <ResponsiveContainer width="100%" height={220}>
+        <BarChart
+          data={bars}
+          layout="vertical"
+          margin={{ top: 4, right: 44, left: 4, bottom: 4 }}
+          barCategoryGap={12}
+        >
+          <CartesianGrid horizontal={false} stroke="#e7e5e4" strokeDasharray="3 3" />
           <XAxis
-            dataKey="date"
-            tick={{ fontSize: 11, fill: "var(--muted-foreground)" }}
+            type="number"
+            domain={[0, 1]}
+            tick={{ fontSize: 11, fill: "#57534e" }}
+            tickFormatter={(v) => `${Math.round(v * 100)}%`}
             axisLine={false}
             tickLine={false}
-            interval="preserveStartEnd"
           />
           <YAxis
-            domain={[0, 1]}
-            tick={{ fontSize: 11, fill: "var(--muted-foreground)" }}
+            type="category"
+            dataKey="name"
+            tick={{ fontSize: 11, fill: "#0a0a0a" }}
             axisLine={false}
             tickLine={false}
-            tickFormatter={(v) => `${Math.round(v * 100)}%`}
-            width={36}
+            width={92}
           />
-          <Tooltip content={<CustomTooltip />} cursor={{ stroke: "var(--border)" }} />
-          {SERIES.map((s) => (
-            <Line
-              key={s.key}
-              type="monotone"
-              dataKey={s.key}
-              name={s.name}
-              stroke={s.color}
-              strokeWidth={1.5}
-              dot={false}
-              activeDot={{ r: 3 }}
+          <Tooltip content={<CustomTooltip />} cursor={{ fill: "#f5f5f4" }} />
+          <Bar dataKey="value" radius={[3, 3, 3, 3]} isAnimationActive={false}>
+            {bars.map((b, i) => (
+              <Cell key={i} fill={b.color} />
+            ))}
+            <LabelList
+              dataKey="value"
+              position="right"
+              formatter={(v: any) => `${Math.round(v * 100)}%`}
+              style={{ fontSize: 11, fill: "#0a0a0a", fontFamily: "var(--font-mono)" }}
             />
-          ))}
-        </LineChart>
+          </Bar>
+        </BarChart>
       </ResponsiveContainer>
-
-      <div className="flex items-center flex-wrap gap-x-4 gap-y-1.5 mt-4 pt-4 border-t border-border">
-        {SERIES.map((s) => (
-          <div key={s.key} className="flex items-center gap-1.5">
-            <span
-              className="w-2 h-[2px] rounded-full"
-              style={{ background: s.color }}
-            />
-            <span className="text-[11px] text-muted-foreground">{s.name}</span>
-          </div>
-        ))}
-      </div>
     </div>
   );
 }
