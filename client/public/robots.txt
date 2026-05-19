@@ -1,0 +1,6 @@
+User-agent: *
+Allow: /
+Disallow: /dashboard
+Disallow: /auth/callback
+
+Sitemap: https://looksgoodtomeow.in/sitemap.xml

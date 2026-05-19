@@ -1,0 +1,25 @@
+node_modules/
+dist/
+build/
+*.log
+
+# Local env — contains real secrets, never commit
+.env
+.env.local
+.env.*.local
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# TypeScript build info
+*.tsbuildinfo
+
+# Credentials / private keys — never commit
+*.pem
+*.key
+
+# Large media recordings
+*.mp4
