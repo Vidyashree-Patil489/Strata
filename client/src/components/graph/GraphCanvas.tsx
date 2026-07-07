@@ -3,9 +3,9 @@ import {
   ReactFlow,
   Background,
   Controls,
-  MiniMap,
   Handle,
   Position,
+  MarkerType,
   type Node,
   type Edge,
   type NodeProps,
@@ -52,17 +52,23 @@ interface Props {
    *  still shows pagerank, dependencies, and the basename — just no commit
    *  date or file summary. */
   repoId?: string;
+  /** If true, render the internal "Node labels" overlay in the top-right
+   *  corner. Off by default — parents typically render their own legend
+   *  as a side column so the label list isn't hidden behind the graph. */
+  showLegendOverlay?: boolean;
 }
 
 // ── Constants ─────────────────────────────────────────────────────────
 
-const FILE_W = 68;
-const FILE_H = 70;
-const FILE_GAP = 18;
-const DIR_HEADER = 32;
-const DIR_PADDING = 18;
-const NODE_MIN = 22;
-const NODE_MAX_GROWTH = 28;
+const NODE_MIN = 48;
+const NODE_MAX_GROWTH = 34;
+const NODE_MAX = NODE_MIN + NODE_MAX_GROWTH; // 82
+const FILE_SLOT = NODE_MAX + 22; // slot including gap
+const FILE_W = FILE_SLOT;
+const FILE_H = FILE_SLOT;
+const FILE_GAP = 0; // baked into FILE_SLOT
+const DIR_HEADER = 22;
+const DIR_PADDING = 14;
 
 // ── Helpers ────────────────────────────────────────────────────────────
 
@@ -75,8 +81,13 @@ function dirHue(dir: string): number {
   return Math.abs(h) % 360;
 }
 
-function dirColor(dir: string, sat = 55, lum = 56, alpha = 1): string {
+export function dirColor(dir: string, sat = 62, lum = 58, alpha = 1): string {
   return `hsla(${dirHue(dir)}, ${sat}%, ${lum}%, ${alpha})`;
+}
+
+/** Neo4j-style: choose black or white text based on background lightness. */
+function contrastTextFor(lum: number): string {
+  return lum >= 55 ? "rgba(10,10,10,0.9)" : "rgba(255,255,255,0.96)";
 }
 
 function nodeSize(pageRank: number, max: number): number {
@@ -167,14 +178,19 @@ function computeLayout(
     files.forEach((file, i) => {
       const col = i % cols;
       const row = Math.floor(i / cols);
+      // Center each circle inside its FILE_SLOT so nodes of varying
+      // sizes line up on their centres — big pagerank nodes and small
+      // ones read as a clean grid instead of top-left-anchored blobs.
+      const size = nodeSize(file.pageRank, maxPageRank);
+      const slotOffset = (FILE_SLOT - size) / 2;
       rfNodes.push({
         id: file.id,
         type: "fileNode",
         parentId: `dir:${d}`,
         extent: "parent",
         position: {
-          x: DIR_PADDING + col * (FILE_W + FILE_GAP),
-          y: DIR_HEADER + row * (FILE_H + FILE_GAP),
+          x: DIR_PADDING + col * FILE_SLOT + slotOffset,
+          y: DIR_HEADER + row * FILE_SLOT + slotOffset,
         },
         data: { file, maxPageRank, showDiff },
         draggable: false,
@@ -184,20 +200,20 @@ function computeLayout(
   }
 
   const rfEdges: Edge[] = rawEdges.map((e, i) => {
-    const baseStroke = "#d6d3d1";
-    const baseWidth = 1;
+    const baseStroke = "#a8a29e";
+    const baseWidth = 1.25;
     let stroke = baseStroke;
     let width = baseWidth;
-    let opacity = 0.4;
+    let opacity = 0.55;
     if (showDiff) {
       if (e.diff === "added") {
         stroke = "#15803d";
-        width = 1.5;
-        opacity = 0.85;
+        width = 1.75;
+        opacity = 0.9;
       } else if (e.diff === "removed") {
         stroke = "#b91c1c";
-        width = 1;
-        opacity = 0.6;
+        width = 1.25;
+        opacity = 0.7;
       }
     }
     return {
@@ -206,6 +222,14 @@ function computeLayout(
       target: e.target,
       type: "default",
       style: { stroke, strokeWidth: width, opacity },
+      // Small closed arrow at the target so direction is readable —
+      // matches the "has_repository → agogos" arrows in Neo4j.
+      markerEnd: {
+        type: MarkerType.ArrowClosed,
+        color: stroke,
+        width: 12,
+        height: 12,
+      },
       data: { weight: e.weight ?? 1, diff: e.diff },
     };
   });
@@ -238,7 +262,7 @@ function FileNode({ data }: NodeProps<FileNodeT>) {
   const { file, maxPageRank, showDiff, hoverState } = data;
   const size = nodeSize(file.pageRank, maxPageRank);
 
-  // Color the dot by directory; override for diff state when on.
+  // Color the circle by directory; override for diff state when on.
   const baseFill = dirColor(file.dir);
   const diffFill =
     showDiff && file.diff === "added"
@@ -248,6 +272,7 @@ function FileNode({ data }: NodeProps<FileNodeT>) {
         : null;
   const fill = diffFill ?? baseFill;
 
+  // Neo4j-style border: subtle by default, vivid on hover.
   const border =
     hoverState === "hovered"
       ? "#4f46e5"
@@ -257,23 +282,38 @@ function FileNode({ data }: NodeProps<FileNodeT>) {
           ? "#b91c1c"
           : showDiff && file.diff === "removed"
             ? "#b91c1c"
-            : "rgba(10,10,10,0.18)";
-
-  const borderWidth = hoverState === "hovered" ? 2.5 : hoverState && hoverState !== "dimmed" ? 2 : 1;
+            : "rgba(10,10,10,0.14)";
+  const borderWidth =
+    hoverState === "hovered" ? 3 : hoverState && hoverState !== "dimmed" ? 2.5 : 1.5;
 
   const dimmed = hoverState === "dimmed";
   const fadedByDiff = showDiff && file.diff === "unchanged" && !hoverState;
 
+  // Trim ".ts", ".tsx", ".py", ".js", etc. for the inside-circle label
+  // — the extension steals visual space without adding meaning; the
+  // hover card still shows the full path.
+  const shortName = file.label.replace(
+    /\.(tsx?|jsx?|py|go|rs|java|c(pp|s)?|rb|php|kt)$/i,
+    "",
+  );
+  // How many chars fit in the circle scales with the radius.
+  const maxChars = Math.max(4, Math.floor(size / 8.5));
+  const inCircle =
+    shortName.length > maxChars ? shortName.slice(0, maxChars - 1) + "…" : shortName;
+  const fontSize = Math.max(9, Math.min(12, size / 6.5));
+  const textColor = diffFill ? "rgba(255,255,255,0.96)" : contrastTextFor(58);
+
   return (
     <div
-      className="flex flex-col items-center"
       style={{
-        opacity: dimmed ? 0.18 : fadedByDiff ? 0.4 : 1,
-        transition: "opacity 120ms",
+        width: size,
+        height: size,
+        position: "relative",
+        opacity: dimmed ? 0.2 : fadedByDiff ? 0.45 : 1,
+        transition: "opacity 120ms, transform 140ms",
+        transform: hoverState === "hovered" ? "scale(1.08)" : "scale(1)",
       }}
     >
-      {/* Handles centered on the circle so edges connect to it visually,
-          not to the wrapping label-aware div. */}
       <Handle
         type="target"
         position={Position.Top}
@@ -288,55 +328,70 @@ function FileNode({ data }: NodeProps<FileNodeT>) {
       />
       <div
         style={{
-          width: size,
-          height: size,
+          width: "100%",
+          height: "100%",
           background: fill,
           border: `${borderWidth}px solid ${border}`,
           borderRadius: "50%",
-          transition: "border 100ms, transform 120ms, box-shadow 120ms",
-          transform: hoverState === "hovered" ? "scale(1.1)" : "scale(1)",
-          boxShadow: hoverState === "hovered" ? "0 4px 14px rgba(79,70,229,0.25)" : "none",
-        }}
-      />
-      <span
-        className="mt-1 truncate font-mono"
-        style={{
-          fontSize: 9.5,
-          maxWidth: FILE_W - 4,
-          color: "var(--card-foreground, #0a0a0a)",
-          opacity: dimmed ? 0.4 : 0.75,
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          transition: "border 100ms, box-shadow 140ms",
+          boxShadow:
+            hoverState === "hovered"
+              ? "0 8px 22px rgba(79,70,229,0.30)"
+              : "0 1px 3px rgba(10,10,10,0.12)",
         }}
         title={file.id}
       >
-        {file.label}
-      </span>
+        <span
+          className="font-medium"
+          style={{
+            fontSize,
+            color: textColor,
+            padding: "0 4px",
+            textAlign: "center",
+            lineHeight: 1.1,
+            userSelect: "none",
+            wordBreak: "break-all",
+            maxWidth: size - 8,
+          }}
+        >
+          {inCircle}
+        </span>
+      </div>
     </div>
   );
 }
 
 function DirGroup({ data }: NodeProps<DirGroupT>) {
-  const tint = dirColor(data.dir, 55, 56, 0.05);
-  const stroke = dirColor(data.dir, 45, 45, 0.32);
-  const labelColor = dirColor(data.dir, 35, 28, 0.85);
+  // Neo4j-style: no visible container. Just a floating group label
+  // above the cluster of files so the user still sees "this cluster is
+  // /server/src". No dashed box, no tint — the cluster is defined by
+  // proximity, not by a rectangle.
+  const labelColor = dirColor(data.dir, 45, 32, 0.9);
 
   return (
     <div
-      className="rounded-xl relative"
+      className="relative"
       style={{
         width: "100%",
         height: "100%",
-        background: tint,
-        border: `1px dashed ${stroke}`,
+        pointerEvents: "none",
       }}
     >
       <div
         className="absolute font-medium font-mono"
         style={{
-          top: 8,
-          left: DIR_PADDING,
+          top: 2,
+          left: 6,
           fontSize: 11,
           color: labelColor,
-          letterSpacing: 0.2,
+          letterSpacing: 0.3,
+          background: "rgba(255,255,255,0.72)",
+          padding: "2px 8px",
+          borderRadius: 6,
+          backdropFilter: "blur(2px)",
         }}
       >
         {data.label === "." ? "(root)" : data.label + "/"}
@@ -374,6 +429,120 @@ interface HoverState {
 interface CursorPos {
   x: number;
   y: number;
+}
+
+/**
+ * Persistent, closable detail panel — anchored bottom-left of the canvas.
+ * Same content as the hover card, but sticks around until dismissed so the
+ * user can click a node then move the mouse away to explore details.
+ */
+function PinnedDetailPanel({
+  file,
+  meta,
+  incoming,
+  outgoing,
+  onClose,
+}: {
+  file: GraphNode;
+  meta: FileMeta | "loading" | "error" | null;
+  incoming: HoverNeighbor[];
+  outgoing: HoverNeighbor[];
+  onClose: () => void;
+}) {
+  return (
+    <div
+      className="absolute z-20 rounded-lg"
+      style={{
+        left: 12,
+        bottom: 12,
+        width: 360,
+        maxHeight: "70%",
+        overflowY: "auto",
+        background: "var(--card, #ffffff)",
+        border: `1.5px solid ${dirColor(file.dir, 55, 55, 0.6)}`,
+        padding: 12,
+        boxShadow:
+          "0 10px 30px rgba(10, 10, 10, 0.12), 0 4px 10px rgba(10,10,10,0.05)",
+      }}
+    >
+      <div className="flex items-start gap-2">
+        <span
+          style={{
+            width: 12,
+            height: 12,
+            borderRadius: "50%",
+            background: dirColor(file.dir),
+            marginTop: 3,
+            flexShrink: 0,
+            border: "1px solid rgba(10,10,10,0.15)",
+          }}
+          title={file.dir === "." ? "root" : file.dir}
+        />
+        <div className="min-w-0 flex-1">
+          <div
+            className="font-semibold truncate"
+            style={{ fontSize: 13, color: "var(--card-foreground, #0a0a0a)" }}
+          >
+            {file.label}
+          </div>
+          <div
+            className="font-mono truncate"
+            style={{ fontSize: 10.5, color: "var(--muted-foreground, #57534e)" }}
+            title={file.id}
+          >
+            {file.id}
+          </div>
+        </div>
+        <button
+          type="button"
+          onClick={onClose}
+          className="text-muted-foreground hover:text-foreground shrink-0"
+          aria-label="Close"
+          style={{ marginLeft: 4, fontSize: 12, lineHeight: 1 }}
+        >
+          ×
+        </button>
+      </div>
+
+      <div className="mt-2">
+        <span
+          className="inline-flex items-center gap-1.5"
+          style={{
+            background: dirColor(file.dir, 62, 92, 1),
+            border: `1px solid ${dirColor(file.dir, 55, 55, 0.4)}`,
+            borderRadius: 999,
+            padding: "1.5px 8px",
+            fontSize: 10.5,
+            color: dirColor(file.dir, 40, 22, 1),
+          }}
+        >
+          <span className="font-mono">
+            {file.dir === "." ? "root" : file.dir + "/"}
+          </span>
+        </span>
+      </div>
+
+      <div className="grid grid-cols-2 gap-2 mt-3">
+        <Stat label="PageRank" value={`${(file.pageRank * 100).toFixed(2)}%`} />
+        <Stat label="Definitions" value={String(file.defCount)} />
+      </div>
+
+      <MetaSection meta={meta} />
+
+      <NeighborList
+        icon="incoming"
+        label="Imported by"
+        peers={incoming}
+        empty="No file imports this"
+      />
+      <NeighborList
+        icon="outgoing"
+        label="Imports"
+        peers={outgoing}
+        empty="Imports nothing"
+      />
+    </div>
+  );
 }
 
 function HoverCard({ state, cursor }: { state: HoverState; cursor: CursorPos }) {
@@ -639,6 +808,7 @@ export function GraphCanvas({
   showDiff = false,
   onNodeClick,
   repoId,
+  showLegendOverlay = false,
 }: Props) {
   const { rfNodes: baseNodes, rfEdges: baseEdges } = useMemo(
     () => computeLayout(nodes, edges, showDiff),
@@ -647,6 +817,11 @@ export function GraphCanvas({
 
   const [hoverState, setHoverState] = useState<HoverState | null>(null);
   const [cursor, setCursor] = useState<CursorPos>({ x: 0, y: 0 });
+  // pinnedFile survives mouseleave — click a node to pin it, click empty
+  // canvas (or the panel's X) to unpin. Provides the "click a node to see
+  // its info" behaviour without depending on transient hover state.
+  const [pinnedFile, setPinnedFile] = useState<GraphNode | null>(null);
+  const [pinnedMeta, setPinnedMeta] = useState<FileMeta | "loading" | "error" | null>(null);
   const metaCacheRef = useRef<Map<string, FileMeta>>(new Map());
 
   // Precompute neighbor lookups so hover is O(1) regardless of graph size.
@@ -681,33 +856,35 @@ export function GraphCanvas({
     return { incomingMap: inc, outgoingMap: out };
   }, [edges, labelById]);
 
-  // Apply hover decoration to the visible nodes/edges.
+  // "Active" node = hovered (transient) OR pinned (sticky). Both drive
+  // the same neighbor-highlight decoration so the graph reads
+  // consistently whether you're mousing over or you've clicked to pin.
+  const activeId = hoverState?.file.id ?? pinnedFile?.id ?? null;
+
   const displayNodes = useMemo<Node[]>(() => {
-    if (!hoverState) return baseNodes;
-    const hoveredId = hoverState.file.id;
+    if (!activeId) return baseNodes;
     const incomingSet = new Set(
-      (incomingMap.get(hoveredId) ?? []).map((n) => n.id),
+      (incomingMap.get(activeId) ?? []).map((n) => n.id),
     );
     const outgoingSet = new Set(
-      (outgoingMap.get(hoveredId) ?? []).map((n) => n.id),
+      (outgoingMap.get(activeId) ?? []).map((n) => n.id),
     );
     return baseNodes.map((n) => {
       if (n.type === "dirGroup") return n;
       let state: FileHoverState;
-      if (n.id === hoveredId) state = "hovered";
+      if (n.id === activeId) state = "hovered";
       else if (incomingSet.has(n.id)) state = "incoming";
       else if (outgoingSet.has(n.id)) state = "outgoing";
       else state = "dimmed";
       return { ...n, data: { ...(n.data as FileNodeData), hoverState: state } };
     });
-  }, [baseNodes, hoverState, incomingMap, outgoingMap]);
+  }, [baseNodes, activeId, incomingMap, outgoingMap]);
 
   const displayEdges = useMemo<Edge[]>(() => {
-    if (!hoverState) return baseEdges;
-    const hoveredId = hoverState.file.id;
+    if (!activeId) return baseEdges;
     return baseEdges.map((e) => {
-      const isIncoming = e.target === hoveredId;
-      const isOutgoing = e.source === hoveredId;
+      const isIncoming = e.target === activeId;
+      const isOutgoing = e.source === activeId;
       if (isIncoming) {
         return {
           ...e,
@@ -726,10 +903,12 @@ export function GraphCanvas({
       }
       return { ...e, style: { ...e.style, opacity: 0.06 } };
     });
-  }, [baseEdges, hoverState]);
+  }, [baseEdges, activeId]);
 
   // Fetch /file-meta lazily; cache by file id (stable for the lifetime of
-  // the snapshot, since paths don't move within one commit).
+  // the snapshot, since paths don't move within one commit). Updates
+  // both hover and pinned meta so a pinned card refreshes when its data
+  // arrives, even if the mouse has already left.
   const fetchMeta = useCallback(
     (file: GraphNode) => {
       if (!repoId) return;
@@ -738,6 +917,7 @@ export function GraphCanvas({
         setHoverState((cur) =>
           cur && cur.file.id === file.id ? { ...cur, meta: cached } : cur,
         );
+        setPinnedMeta((cur) => (pinnedFile?.id === file.id ? cached : cur));
         return;
       }
       api
@@ -749,14 +929,18 @@ export function GraphCanvas({
           setHoverState((cur) =>
             cur && cur.file.id === file.id ? { ...cur, meta: data } : cur,
           );
+          setPinnedMeta((cur) => (pinnedFile?.id === file.id ? data : cur));
         })
         .catch(() => {
           setHoverState((cur) =>
             cur && cur.file.id === file.id ? { ...cur, meta: "error" } : cur,
           );
+          setPinnedMeta((cur) =>
+            pinnedFile?.id === file.id ? "error" : cur,
+          );
         });
     },
-    [repoId],
+    [repoId, pinnedFile],
   );
 
   const onNodeMouseEnter: NodeMouseHandler = useCallback(
@@ -796,10 +980,29 @@ export function GraphCanvas({
   const onNodeClickInternal: NodeMouseHandler = useCallback(
     (_event, node) => {
       if (node.type !== "fileNode") return;
-      onNodeClick?.((node.data as FileNodeData).file.id);
+      const file = (node.data as FileNodeData).file;
+      // Toggle: click the same node again to unpin.
+      setPinnedFile((cur) => (cur?.id === file.id ? null : file));
+      const cached = metaCacheRef.current.get(file.id);
+      setPinnedMeta(cached ?? (repoId ? "loading" : null));
+      if (!cached) fetchMeta(file);
+      onNodeClick?.(file.id);
     },
-    [onNodeClick],
+    [onNodeClick, fetchMeta, repoId],
   );
+
+  // Directory legend — Neo4j-style "Node labels" panel: top directories
+  // by file count, each with its colour swatch and count.
+  const dirLegend = useMemo(() => {
+    const byDir = new Map<string, number>();
+    for (const n of nodes) {
+      const d = n.dir || ".";
+      byDir.set(d, (byDir.get(d) ?? 0) + 1);
+    }
+    return [...byDir.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 10);
+  }, [nodes]);
 
   return (
     <div
@@ -819,29 +1022,96 @@ export function GraphCanvas({
         onNodeMouseMove={onNodeMouseMove}
         onNodeMouseLeave={onNodeMouseLeave}
         onNodeClick={onNodeClickInternal}
+        onPaneClick={() => setPinnedFile(null)}
         nodesDraggable={false}
         nodesConnectable={false}
-        elementsSelectable
+        // elementsSelectable=false disables ReactFlow's built-in
+        // rectangular selection border that flashes on click and made
+        // node clicks look "glitchy". We drive our own highlight via
+        // pinnedFile / hoverState instead.
+        elementsSelectable={false}
         panOnScroll
         zoomOnScroll={false}
         zoomOnPinch
       >
         <Background gap={32} size={1} color="#e7e5e4" />
         <Controls showInteractive={false} />
-        <MiniMap
-          pannable
-          zoomable
-          nodeStrokeColor="rgba(10,10,10,0.2)"
-          nodeColor={(n) =>
-            n.type === "dirGroup"
-              ? "transparent"
-              : dirColor(((n.data as FileNodeData)?.file)?.dir ?? ".")
-          }
-          maskColor="rgba(245,245,244,0.6)"
-          style={{ background: "var(--card, #ffffff)" }}
-        />
       </ReactFlow>
-      {hoverState && <HoverCard state={hoverState} cursor={cursor} />}
+
+      {/* Overlay legend — only when parent explicitly asks for it. Parents
+          that render their own side-column legend leave this off. */}
+      {showLegendOverlay && dirLegend.length > 0 && (
+        <div
+          className="absolute z-10 pointer-events-none"
+          style={{
+            top: 12,
+            right: 12,
+            background: "var(--card, #ffffff)",
+            border: "1px solid var(--border, #e7e5e4)",
+            borderRadius: 8,
+            padding: "10px 12px",
+            fontSize: 11,
+            boxShadow: "0 4px 12px rgba(10,10,10,0.06)",
+            maxWidth: 220,
+          }}
+        >
+          <div
+            className="uppercase tracking-wider mb-2"
+            style={{ fontSize: 9.5, color: "var(--muted-foreground, #57534e)" }}
+          >
+            Node labels
+          </div>
+          <div className="flex flex-wrap gap-1.5">
+            {dirLegend.map(([dir, count]) => (
+              <div
+                key={dir}
+                className="inline-flex items-center gap-1.5"
+                style={{
+                  background: dirColor(dir, 62, 92, 1),
+                  border: `1px solid ${dirColor(dir, 55, 55, 0.5)}`,
+                  borderRadius: 999,
+                  padding: "2px 8px",
+                  fontSize: 10.5,
+                  color: dirColor(dir, 40, 22, 1),
+                }}
+              >
+                <span
+                  style={{
+                    width: 8,
+                    height: 8,
+                    borderRadius: "50%",
+                    background: dirColor(dir),
+                    display: "inline-block",
+                  }}
+                />
+                <span className="font-mono">
+                  {dir === "." ? "root" : dir}
+                </span>
+                <span className="font-mono tabular-nums" style={{ opacity: 0.7 }}>
+                  ({count})
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Pinned detail panel — anchored bottom-left. Persists until the
+          user clicks the empty canvas, the X, or the same node again. */}
+      {pinnedFile && (
+        <PinnedDetailPanel
+          file={pinnedFile}
+          meta={pinnedMeta}
+          incoming={incomingMap.get(pinnedFile.id) ?? []}
+          outgoing={outgoingMap.get(pinnedFile.id) ?? []}
+          onClose={() => setPinnedFile(null)}
+        />
+      )}
+      {/* Transient hover card only shown when no pin is active — otherwise
+          the two would overlap and steal focus from each other. */}
+      {hoverState && !pinnedFile && (
+        <HoverCard state={hoverState} cursor={cursor} />
+      )}
     </div>
   );
 }

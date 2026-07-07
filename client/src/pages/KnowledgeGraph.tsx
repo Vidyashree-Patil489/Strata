@@ -25,6 +25,7 @@ import { useSocket } from "../hooks/useSocket";
 import { useAuth } from "../context/AuthContext";
 import {
   GraphCanvas,
+  dirColor,
   type GraphNode,
   type GraphEdge,
   type DiffState,
@@ -704,8 +705,8 @@ export default function KnowledgeGraph() {
         </div>
       )}
 
-      {/* Main grid: graph + sidepanel */}
-      <div className={`grid gap-3 ${mode === "diff" ? "grid-cols-1 lg:grid-cols-[minmax(0,1fr)_320px]" : "grid-cols-1"}`}>
+      {/* Main grid: graph + sidepanel (Node labels in view mode, DiffSidepanel in diff mode) */}
+      <div className="grid gap-3 grid-cols-1 lg:grid-cols-[minmax(0,1fr)_260px]">
         {/* Canvas */}
         <div className="clay-card overflow-hidden">
           {!current ? (
@@ -724,9 +725,11 @@ export default function KnowledgeGraph() {
           )}
         </div>
 
-        {/* Diff sidepanel */}
-        {mode === "diff" && diff && (
+        {/* Right column: diff panel in diff mode, node-labels table in view mode */}
+        {mode === "diff" && diff ? (
           <DiffSidepanel diff={diff} />
+        ) : (
+          current && <NodeLabelsPanel nodes={current.nodes} />
         )}
       </div>
 
@@ -1377,6 +1380,75 @@ function FilePatchRow({ file }: { file: FilePatch }) {
           )}
         </div>
       )}
+    </div>
+  );
+}
+
+/**
+ * "Node labels" — full directory list rendered as a proper side-column
+ * table (not an overlay on the graph). Rows are sorted by file count,
+ * matching how graph-visualization tools like Neo4j list node categories.
+ */
+function NodeLabelsPanel({ nodes }: { nodes: GraphNode[] }) {
+  const dirStats = (() => {
+    const byDir = new Map<string, number>();
+    for (const n of nodes) {
+      const d = n.dir || ".";
+      byDir.set(d, (byDir.get(d) ?? 0) + 1);
+    }
+    return [...byDir.entries()].sort((a, b) => b[1] - a[1]);
+  })();
+
+  const total = nodes.length;
+
+  return (
+    <div className="clay-card p-4 lg:sticky lg:top-4 h-fit">
+      <div className="flex items-baseline justify-between pb-3 mb-3 border-b border-border">
+        <p className="text-[11px] uppercase tracking-[0.06em] font-medium text-muted-foreground">
+          Node labels
+        </p>
+        <p className="text-[11px] text-muted-foreground tabular-nums">
+          {dirStats.length} dirs · {total} files
+        </p>
+      </div>
+
+      <ul className="divide-y divide-border max-h-[600px] overflow-y-auto -mr-1 pr-1">
+        {dirStats.map(([dir, count]) => {
+          const pct = total > 0 ? Math.round((count / total) * 100) : 0;
+          return (
+            <li
+              key={dir}
+              className="py-2 flex items-center gap-2.5"
+              title={dir === "." ? "root" : dir}
+            >
+              <span
+                style={{
+                  width: 10,
+                  height: 10,
+                  borderRadius: "50%",
+                  background: dirColor(dir),
+                  border: "1px solid rgba(10,10,10,0.15)",
+                  flexShrink: 0,
+                }}
+              />
+              <span className="font-mono text-[11.5px] truncate flex-1 min-w-0">
+                {dir === "." ? "(root)" : dir + "/"}
+              </span>
+              <span className="font-mono tabular-nums text-[11px] text-muted-foreground shrink-0 w-8 text-right">
+                {count}
+              </span>
+              <span className="font-mono tabular-nums text-[10.5px] text-muted-foreground shrink-0 w-9 text-right">
+                {pct}%
+              </span>
+            </li>
+          );
+        })}
+      </ul>
+
+      <p className="mt-3 text-[10.5px] text-muted-foreground leading-relaxed">
+        Colours match the circles in the graph. Click a node to pin its
+        details in the bottom-left of the canvas.
+      </p>
     </div>
   );
 }

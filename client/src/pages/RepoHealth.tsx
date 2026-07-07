@@ -399,13 +399,40 @@ export default function RepoHealth() {
         </div>
       )}
 
-      {/* Trend + commit timeline */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-3 mb-3">
-        {history.length > 0 && <TrendChart data={history} />}
-        {snapshot.recentPushes && snapshot.recentPushes.length > 0 && (
+      {/* Trend — full width so the area chart has room to breathe. Pass
+          the earliest tracked event (oldest push or oldest snapshot) as
+          the axis start so the timeline reflects the repo's full history
+          instead of collapsing to just the snapshot dates. */}
+      {history.length > 0 && (
+        <div className="mb-3">
+          <TrendChart
+            data={history}
+            rangeStart={(() => {
+              const candidates: number[] = [];
+              const pushes = snapshot.recentPushes ?? [];
+              for (const p of pushes) {
+                const t = new Date(p.pushedAt).getTime();
+                if (!Number.isNaN(t)) candidates.push(t);
+              }
+              for (const h of history) {
+                const t = new Date(h.computedAt).getTime();
+                if (!Number.isNaN(t)) candidates.push(t);
+              }
+              return candidates.length
+                ? new Date(Math.min(...candidates)).toISOString()
+                : undefined;
+            })()}
+            rangeEnd={new Date().toISOString()}
+          />
+        </div>
+      )}
+
+      {/* Recent activity — stacked below the trend */}
+      {snapshot.recentPushes && snapshot.recentPushes.length > 0 && (
+        <div className="mb-3">
           <CommitTimeline pushes={snapshot.recentPushes} repoId={activeRepoId!} />
-        )}
-      </div>
+        </div>
+      )}
 
       {/* Score breakdown — formula plugged in with current numbers, paired
           with the visual signal breakdown right below it. */}
